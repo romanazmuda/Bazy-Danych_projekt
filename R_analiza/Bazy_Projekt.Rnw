@@ -1,0 +1,296 @@
+\documentclass[12pt, a4paper]{article}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\usepackage[OT4]{polski}
+\usepackage[utf8]{inputenc}
+\usepackage[top=2.5cm, bottom=2.5cm, left=2cm, right=2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage[colorlinks=true, linkcolor=blue]{hyperref}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+\begin{document}
+\SweaveOpts{concordance=TRUE}
+%\SweaveOpts{concordance=TRUE}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% strona tytulowa
+\title{Projekt Bazy Danych Firmy 1REMONT4U}
+\author{Romana Żmuda(249706), Patryk Krukowski(249824), Adrian Kit(249746)}
+\maketitle
+\tableofcontents
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Wstęp}
+W tej części przedstawimy króciutki opis poszczególnych tabel w bazie danych, opowiemy o przygotowaniach i o tym jak powstała baza. Zaczniemy od opisu. Mamy łącznie 8 tabel:
+
+\begin{itemize}
+\item{Klient - podstawowe dane o klientach firmy}
+\item{Zlecenia - informacje o zleceniach takie jak daty rozpoczęcia i zakończenia prac oraz informacje o wartościach danego zlecenia}
+\item{Pracownicy - podstawowe informacje o pracownikach}
+\item{Kwalifikacje - funkcja jaką pełni pracownik}
+\item{Ekipa - pracownicy są przydzieleni do ekip, w których pracują, na stałe. Znajdziemy tu takze informacje o sprzęcie, jakiego używała ekipa oraz o finansach. }
+\item{PakietSprzetowy - sprzęt firmy podzieliliśmy w pakiety, które są przydzielone do ekip}
+\item{ZestawMaterialu - informacje o materiałach}
+\item{KosztyStale - wynagrodzenie pracowników biurowych i koszty serwisu gwarancyjnego}
+\end{itemize}
+
+Wizualizacja bazy:
+
+\includegraphics{Baza.jpg}
+
+Analizę przeprowadzimy w R, dane na serwer wgraliśmy także przy użyciu R. Jeśli chodzi o generowanie to skorzystaliśmy z Excela i R.
+
+\section{Generowanie i wgrywanie danych}
+
+\begin{itemize}
+\item Zaczęliśmy od generowania imion, problem rozbiliśmy na imiona męskie, żeńskie zrobiliśmy się analogicznie. 
+
+\includegraphics{Imiona.jpg}
+
+\item Następnie wygenerowaliśmy daty potrzebne do realizacji zamówień i zgodnie z założeniami inne potrzebne nam kolumny.
+
+\includegraphics{Daty1.jpg} \newline 
+\includegraphics{Daty2.jpg}
+
+Nasza firma prowadzi działalność od 1 stycznia 2020r., w naszej bazie zlecenia przyjmowaliśmy do 9 lutego 2021r. Pracę musimy rozpocząć najpóźniej miesiąc (31 dni) od dnia przyjęcia zlecenia, zaś sam remont nie może trwać dłużej niż 14 dni. 
+
+\item Gotową bazę przygotowaną w Excelu wgraliśmy do R za pomocą biblioteki \textsl{xlsx}. Kłopotem jaki napotkaliśmy było odpowiednie przyporządkowanie ekip do zlecenia tak, by w jednym czasie ekipa nie robiła dwóch zleceń naraz. 
+
+\includegraphics{Ekipa.jpg}
+
+\item Tak przygotowaną bazę wgraliśmy na serwer za pomocą biblioteki \textsl{RMariaDB}
+
+\includegraphics{Wgrywanie.jpg}
+
+\end{itemize}
+
+\section{Analiza danych}
+
+Baza została połączona z R. Właśnie w nim wykonamy naszą analizę. Podstawowe zadania do wykonania:
+
+\begin{itemize}
+\item{Przygotuj wykres liczby oczekujących zleceń w czasie.}
+\item{Przygotuj wykres przedstawiający zmieniającą się liczbę czynnych pracowników każdego miesiąca.}
+\item{Stwórz bilans finansowy firmy — czy jest w stanie się utrzymać?}
+\item{Stwórz listę osób najdłużej czekających na remont.}
+\end{itemize}
+
+Naszą analizę poszerzylismy o problemy:
+\begin{itemize}
+\item{Stworzyć histogram czasu oczekiwania na remont, podać średni czas oczekiwania oraz medianę.}
+\item{Wyliczenie procentowego wkładu poszczególnych czynników na przychody i wydatki}
+\item{Czas realizacji zleceń}
+\item{Najczęściej wykorzystywany sprzęt}
+\end{itemize}
+
+W kolejnych podsekcjach będziemy omawiać szczegółowo powyższe problemy. 
+
+\subsection{Przygotuj wykres liczby oczekujących zleceń w czasie}
+
+
+<<0.0, eval=T, echo=F, warning=F, cache=T>>=
+#Sprawdzam, czy są powtarzające sie zlecenia, tzn w jednym dniu moglo zostać przyjete wiecej, 
+#niż jedno
+#zlecenie
+library(tidyverse)
+library(RMySQL)
+library(RMariaDB)
+library(DBI)
+library(dbplyr)
+library(dplyr)
+library(lubridate)
+db_con <- DBI::dbConnect(drv=RMySQL::MySQL(), #lączenie z bazą danych
+                         username = 'team4',
+                         password = 't3@mAP@55',
+                         db = 'team4',
+                         host = 'giniewicz.it',
+                         port = 3306)
+ekipa <- as.data.frame(tbl(db_con, "Ekipa"))
+kwalifikacje <- as.data.frame(tbl(db_con, "Kwalifikacje"))
+pracownicy <- as.data.frame(tbl(db_con, "Pracownicy"))
+zlecenia <- as.data.frame(tbl(db_con, "Zlecenia"))
+pakiet <- as.data.frame(tbl(db_con, "PakietSprzetowy"))
+materialy <- as.data.frame(tbl(db_con, "ZestawMaterialu"))
+klient <- as.data.frame(tbl(db_con, "Klient"))
+koszty <- as.data.frame(tbl(db_con, "KosztyStale"))
+
+
+
+oczekujace_zlecenia <- as.data.frame(zlecenia %>%
+  mutate(m_przyj=month(Data_przyjecia_zlecenia), r_przyj=year(Data_przyjecia_zlecenia),
+         m_rozp=month(Data_rozpoczecia_prac), r_rozp=year(Data_rozpoczecia_prac)) %>%
+         group_by(r_przyj, m_przyj,r_rozp,m_rozp) %>%
+          tally() %>% #Liczymy unikatowe wartości
+          collect()) #Wymusza zapytanie
+@
+
+
+\includegraphics{Plot11.jpg}
+
+Opis wykresu: Kolorem zielonym oznaczyliśmy punkty odpowiadające ilości zleceń rozpoczętych i zakończonych w i-tym miesiącu (okresy nieprzejściowe), natomiast czerwone odpowiadają zleceniom rozpoczętym w i-tym i zakończonym w i+1 miesiącu (okresy przejściowe). 
+\newline
+Obserwacje:
+\begin{itemize}
+\item{Najwięcej zleceń było przyjmowanych w okresie od września do listopada. Ciekawym pomysłem jest sprawdzenie, jak bardzo jest to odzwierciedlone w dochodach. Stąd można wyciągnąć także wiele innych, cennych dla firmy informacji.}
+\item{Niewielka ilość zleceń w ostatnich dwóch miesiącach (jest to spowodowane "końcem" naszej bazy, w lutym zostało przyjęte ostatnie zlecenie)}
+\item{Można zauważyć, że więcej zleceń było przejmowanych w okresach przejściowych}
+\end{itemize}
+
+Te cenne informacje to:
+\begin{itemize}
+\item{Firma powinna przygotować się na wzmożoną aktywność, na przykład zatrudnić więcej pracowników na ten okres, ostrzec hurtownie i próbować zbić cenę materiałów itp.}
+\item W kalkulacjach zarząd firmy powinien uwzględnić kapitał zapasowy na wynagordzenie dla pracowników w trakcie pozostałego okresu celem zachowania płynności finansowej. 
+\end{itemize}
+
+\subsection{Przygotuj wykres przedstawiający zmieniającą się liczbę czynnych pracowników każdego miesiąca.}
+
+\includegraphics{Plot2.jpg} \newline
+Obserwacje i wnioski:
+\begin{itemize}
+\item{Widać wyraźne skoki wartości, które na pierwszy rzut oka są losowe, jednak po chwili głębszej analizy zauważamy istotną zależność: Liczba czynnych pracowników maleje zawsze w pierwszej połowie miesiąca, tzn od końca okresu nieprzejściowego do przejściowego i rośnie od okresu przejściowego do nieprzejściowego. To wyraźnie świadczy o większym zainteresowaniu remontami w drugiej połowie miesiąca, co potwierdza rezultaty z zadania pierwszego}
+\item{Pomimo powyższego wniosku, liczba czynnych pracowników nie wzrosła wyraźnie w okresie wzmożonej aktywności (na wykresie z zadania pierwszego była wzmożona aktywność w miesiącach wrzesień-listopad, tutaj brak takiej anomalii)}
+\item{Najwięcej czynnych pracowników było w pierwszej połowie lipca, nie pokrywa się to jednak z rezultatami zadania pierwszego.}
+\end{itemize}
+
+
+\subsection{Stwórz bilans finansowy firmy — czy jest w stanie się utrzymać?}
+W naszej firmie bilans wyliczamy w następujący sposób: Jest to kwota, którą zarobiliśmy na zleceniu wykonywanym przez daną ekipę oraz zysk z materiałów pomniejszona o koszty stałe i cenę materiału, jaką zapłaciliśmy hurtowni. 
+
+<<1.0, eval=T, echo=T, warning=F>>=
+zapytanie_3_koszty_stale <- dbGetQuery(db_con, "
+                          SELECT
+                          SUM(Wyplata_finanse) AS S1, SUM(Wyplata_administracja) AS S2,
+                          SUM(Zaplata_usluga_gwarancji) AS S3
+                          FROM KosztyStale;
+                          ")
+
+
+koszty_stale_bilans <- sum(zapytanie_3_koszty_stale)#sumujemy wszystkie koszty stałe
+
+materialy_bilans <- as.double(dbGetQuery(db_con, "
+                                    SELECT SUM(Cena_kupna)
+                                    FROM ZestawMaterialu
+                                    "))
+
+
+bilans <- sum(zlecenia$Cena_zysku_ekipy)+sum(zlecenia$Cena_materialu_zlecenia)-koszty_stale_bilans-materialy_bilans
+bilans
+@
+Okazuje się, że nasza firma jest w stanie się utrzymać. Przy wyliczaniu bilansu zaciekawił nas wpływ poszczególnych czynników na dochód i koszta. Mówiąc konkretniej, zadaliśmy sobie pytanie, czy zysk z materiałów ma jakikolwiek wpływ ma generowany przez firmę dochód. Z drugiej strony, co generuje największe koszty? Dodaliśmy więc to pytanie do puli własnych problemów do rozwiązania.
+\subsection{Stwórz listę osób najdłużej czekających na remont}
+Korzystamy z wbudowanej funkji DATEDIFF pozwalającej obliczyć nam czas oczekiwania klientów na rozpoczęcie prac. 
+<<2.0, eval=T, echo=T, warning=F>>=
+zapytanie_4 <- dbGetQuery(db_con, "SELECT Imie, Nazwisko, DATEDIFF(Data_rozpoczecia_prac, Data_przyjecia_zlecenia) AS Czas
+                          FROM Klient
+                          INNER JOIN Zlecenia
+                          ON Zlecenia.Id_klienta = Klient.Id_klienta
+                          ORDER BY Czas DESC
+                          LIMIT 50
+                          ")
+
+
+zapytanie_4
+@
+Rozwiązując to zadanie zaciekawiło nas, ile wynosi średni czas oczekiwania na remont w naszej firmie oraz jak wypadamy na tle rzeczywistych firm, celem weryfikacji, czy mimo losowo generowanych danych nasza firma jest choć w niewielkim stopniu zbliżona do tych istniejących naprawdę. W tym celu obliczyliśmy średni czas oczekiwania na remont i porównaliśy go z danymi znalezionymi w internecie. Rezultaty przedstawimy w następnej części dotyczącej własnych pytań i analizy. 
+\subsection{Własne pytania}
+Naszą analizę postanowiliśmy poszerzyć o następujące problemy:
+\begin{itemize}
+\item{Kontynuacja zadania trzeciego: Wyliczenie procentowego wkładu poszczególnych czynników na przychody i wydatki}
+\item{Kontynuacja zadania czwartego: Stworzyć histogram czasu oczekiwania na remont, podać średni czas oczekiwania oraz medianę.}
+\item{Czas realizacji zleceń}
+\item{Najczęściej wykorzystywany sprzęt}
+\end{itemize}
+\subsubsection{Wyliczenie procentowego wkładu poszczególnych czynników na przychody i wydatki}
+
+<<22.0, eval=T, echo=T, warning=F>>=
+zysk <- sum(zlecenia$Cena_zysku_ekipy) + 
+        sum(zlecenia$Cena_materialu_zlecenia)
+(sum(zlecenia$Cena_zysku_ekipy)/zysk)*100
+
+@
+Zysk z remontów wyniósł 83\% , zatem zysk z materiałów to około 17\% . To o wiele więcej niż przypuszczaliśmy. Analogiczna analiza dla wydatków, zaprezentowana w formie wykresu kołowego.
+
+<<2222.0, eval=T, echo=T, warning=F>>=
+pensja_stacjonarnych <- sum(koszty$Wyplata_finanse)+sum(koszty$Wyplata_administracja)
+koszt_serwis_gwarancyjny <- sum(koszty$Zaplata_usluga_gwarancji)
+pensja_robotnikow <- sum(zlecenia$Cena_zlecenia_ekipy) - sum(zlecenia$Cena_zysku_ekipy)
+wydatki <- pensja_stacjonarnych+koszt_serwis_gwarancyjny+pensja_robotnikow
+
+x<-pensja_robotnikow/wydatki
+x
+@
+Pensja pracowników fizycznych stanowi 97.5\% wszystkich wydatków firmy. 
+\newline
+\includegraphics{Kołowy.jpg} \newline
+
+Widzimy miażdżącą przewagę pensji pracowników fizycznych.
+\subsubsection{Stworzyć histogram czasu oczekiwania na remont, podać średni czas oczekiwania oraz medianę}
+<<22.1, eval=T, echo=T, warning=F>>=
+zapytanie_4.75 <- dbGetQuery(db_con, "SELECT Imie, Nazwisko, DATEDIFF(Data_rozpoczecia_prac, Data_przyjecia_zlecenia) AS Czas
+                          FROM Klient
+                          INNER JOIN Zlecenia
+                          ON Zlecenia.Id_klienta = Klient.Id_klienta
+                          ORDER BY Czas DESC
+                          ")
+hist(zapytanie_4.75$Czas, main='Histogram czasu oczekiwania na remont', xlab = 'Czas oczekiwania w dniach',
+     ylab='Czestość')
+
+
+
+summary(zapytanie_4.75)
+
+@
+
+\includegraphics{CzasOcz.jpg} \newline
+Widzimy, że średni i najczęstszy czas oczekiwania wynosi 16 dni. Próbowaliśmy porównać naszą firmę z tymi rzeczywistymi, jednak w internecie brak konkretnych informacji na ten temat. Doczytaliśmy, że realizację można przyspieszyć dopłacając dodatkowo. Jest to pomysł który powinien był znaleźć się w ofercie naszej firmy.  
+
+\subsubsection{Czas realizacji zleceń}
+
+<<222.1, eval=T, echo=T, warning=F>>=
+zapytanie_5_3 <- dbGetQuery(db_con, "
+                            SELECT Id_ekipa, Id_zlecenia,
+                            DATEDIFF(Data_zakonczenia_prac, Data_rozpoczecia_prac) AS Czas_pracy
+                            FROM Zlecenia
+                            GROUP BY Id_ekipa, Id_zlecenia
+                            ORDER BY Czas_pracy DESC;
+                            ")
+
+hist(zapytanie_5_3$Czas_pracy, xlab="Czas realizacji zlecenia", ylab="Częstość")
+summary(zapytanie_5_3$Czas_pracy)
+@
+
+\includegraphics{CzasRealZlec.jpg} \newline
+Najdłuższe zlecenia były wykonywane 13 dni, natomiast najkrótsze tylko 1 dzień. Zaskakująco wysoko liczba zleceń jednodniowych. Przeważają zlecenia trwające tydzień czasu.  
+
+\subsubsection{Jaki sprzęt był najczęściej wykorzystywany?}
+
+<<222.1, eval=T, echo=T, warning=F>>=
+zapytanie_5_4 <- dbGetQuery(db_con, "
+                            SELECT Pakiet_sprzetu, COUNT(Pakiet_sprzetu) AS
+                            Ilosc_uzyc
+                            FROM Ekipa
+                            INNER JOIN Zlecenia
+                            ON Ekipa.Id_ekipa = Zlecenia.Id_ekipa
+                            GROUP BY Pakiet_sprzetu
+                            ORDER BY Ilosc_uzyc DESC
+                            LIMIT 5;
+                            ")
+
+
+zapytanie_5_4
+
+
+@
+Pakiet numer 33 został użyty najwięcej razy, bo aż 38. Niestety przez niedokładne opisanie bazy danych nie jesteśmy w stanie powiedzieć, co wchodziło w jego skład, przez do odbieramy sobie możliwość wyciągnięcia pożądanych wniosków.
+
+\section{Zakończenie}
+Najwięcej problemów sprawiły nam dwa pierwsze zadania z analizy oraz brak doświadczenia w generowaniu zmiennych. Przy wgrywaniu problemem było zachowanie odpowiednich wartości funkcji jako zmiennych w danym poleceniu, tak, by dane się dopisywały, a nie tworzyły nową tabelę. Przy wgrywaniu należało pamiętać o zachowaniu odpowiadającego nazewnictwa kolumn SQL z Excelem. 
+\end{document}
+
+
